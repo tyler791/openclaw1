@@ -4,6 +4,9 @@
 //  Monthly Strategic Review (Error Forecasting) + Weekly Bell Curve Scan
 // ═══════════════════════════════════════════════════════════════════════
 
+import { config as loadEnv } from 'dotenv';
+loadEnv();
+
 import { RevenueEngine } from './formulas';
 import { evaluatePromotion, scanAllPromotions } from './promotion-logic';
 import { runMonthlyErrorForecasting } from './error-forecasting';

@@ -49,40 +49,58 @@ async function hospGet<T>(
 // ── List properties ──────────────────────────────────────────────────
 
 interface HospitableProperty {
-  uuid?: string;
   id?: string;
   name?: string;
-  base_price?: number;
-  price?: number;
-  status?: string;
+  listed?: boolean;
+  currency?: string;
 }
 
 export async function listProperties(
   config: HospitableConfig,
-): Promise<Array<{ id: string; name: string; basePrice: number }>> {
+): Promise<Array<{ id: string; name: string }>> {
   const res = await hospGet<{ data?: HospitableProperty[] }>(
     config, '/properties', { per_page: '100' },
   );
 
   const properties = res?.data ?? [];
   return properties
-    .filter(p => !p.status || p.status === 'active')
+    .filter(p => p.listed !== false)
     .map(p => ({
-      id: p.uuid ?? p.id ?? '',
+      id: p.id ?? '',
       name: p.name ?? 'Unnamed',
-      basePrice: Number(p.base_price ?? p.price ?? 0),
     }));
 }
 
 // ── Calendar stats (RevPAR, occupancy, ADR, lowest sold) ─────────────
+//
+// Actual Hospitable v2 calendar response structure:
+//   { data: { listing_id, provider, start_date, end_date, days: [...] } }
+// Each day entry:
+//   { date, status: { reason, available }, price: { amount (cents), currency, formatted } }
+// status.reason values: "AVAILABLE", "RESERVED", "BLOCKED", etc.
+
+interface CalendarDayStatus {
+  reason: string;
+  available: boolean;
+  source?: string;
+}
+
+interface CalendarDayPrice {
+  amount: number;    // in cents (e.g. 22000 = $220.00)
+  currency: string;
+  formatted: string;
+}
 
 interface CalendarDay {
   date: string;
-  available: boolean;
-  price?: number;
-  nightly_price?: number;
-  reservation?: unknown;
-  reservation_id?: string;
+  status: CalendarDayStatus;
+  price: CalendarDayPrice;
+}
+
+interface CalendarResponse {
+  data?: {
+    days?: CalendarDay[];
+  };
 }
 
 interface CalendarStats {
@@ -90,6 +108,7 @@ interface CalendarStats {
   myOccupancy: number;
   myADR: number;
   lowestSoldPrice: number;
+  currentPrice: number;
   totalRevenue: number;
   bookedNights: number;
   availableNights: number;
@@ -101,15 +120,15 @@ export async function fetchCalendarStats(
   startDate: string,
   endDate: string,
 ): Promise<CalendarStats> {
-  const res = await hospGet<{ data?: CalendarDay[] }>(
+  const res = await hospGet<CalendarResponse>(
     config,
     `/properties/${propertyId}/calendar`,
     { start_date: startDate, end_date: endDate },
   );
 
-  const days = res?.data;
+  const days = res?.data?.days;
   if (!Array.isArray(days) || days.length === 0) {
-    return { myRevPAR: 0, myOccupancy: 0, myADR: 0, lowestSoldPrice: 0, totalRevenue: 0, bookedNights: 0, availableNights: 0 };
+    return { myRevPAR: 0, myOccupancy: 0, myADR: 0, lowestSoldPrice: 0, currentPrice: 0, totalRevenue: 0, bookedNights: 0, availableNights: 0 };
   }
 
   let totalRevenue = 0;
@@ -117,22 +136,29 @@ export async function fetchCalendarStats(
   let blockedNights = 0;
   let totalNights = 0;
   let lowestSoldPrice = Infinity;
+  let latestAvailablePrice = 0;
 
   for (const day of days) {
     totalNights++;
+    const priceDollars = (day.price?.amount ?? 0) / 100;
 
-    if (day.available === false) {
-      if (day.reservation || day.reservation_id) {
+    if (!day.status.available) {
+      const reason = day.status.reason?.toUpperCase() ?? '';
+      if (reason === 'RESERVED' || reason === 'BOOKED') {
         // Booked night — price is take-home (after platform fees)
         bookedNights++;
-        const nightlyPrice = Number(day.price ?? day.nightly_price ?? 0);
-        totalRevenue += nightlyPrice;
-        if (nightlyPrice > 0 && nightlyPrice < lowestSoldPrice) {
-          lowestSoldPrice = nightlyPrice;
+        totalRevenue += priceDollars;
+        if (priceDollars > 0 && priceDollars < lowestSoldPrice) {
+          lowestSoldPrice = priceDollars;
         }
       } else {
         // Owner-blocked — excluded from availability
         blockedNights++;
+      }
+    } else {
+      // Track latest available price as "current price"
+      if (priceDollars > 0) {
+        latestAvailablePrice = priceDollars;
       }
     }
   }
@@ -147,22 +173,23 @@ export async function fetchCalendarStats(
     myOccupancy,
     myADR,
     lowestSoldPrice: lowestSoldPrice === Infinity ? 0 : lowestSoldPrice,
+    currentPrice: latestAvailablePrice,
     totalRevenue,
     bookedNights,
     availableNights,
   };
 }
 
-// ── Current base price from property details ─────────────────────────
+// ── Current price from today's calendar ──────────────────────────────
 
 export async function fetchCurrentPrice(
   config: HospitableConfig,
   propertyId: string,
 ): Promise<number> {
-  const res = await hospGet<{ data?: HospitableProperty }>(
-    config, `/properties/${propertyId}`,
-  );
-  return Number(res?.data?.base_price ?? res?.data?.price ?? 0);
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const stats = await fetchCalendarStats(config, propertyId, today, tomorrow);
+  return stats.currentPrice;
 }
 
 // ── Average booking length from reservations ─────────────────────────
@@ -183,7 +210,7 @@ export async function fetchAvgBookingLength(
   propertyId: string,
 ): Promise<number> {
   const res = await hospGet<{ data?: HospitableReservation[] }>(
-    config, '/reservations', { per_page: '100' },
+    config, '/reservations', { per_page: '100', 'properties[]': propertyId },
   );
 
   const reservations = res?.data ?? [];
@@ -191,8 +218,6 @@ export async function fetchAvgBookingLength(
   let count = 0;
 
   for (const r of reservations) {
-    // Filter to this property
-    if (r.property_id !== propertyId && r.property_uuid !== propertyId) continue;
     // Skip cancelled
     if (r.status === 'cancelled' || r.status === 'declined') continue;
 
@@ -246,7 +271,7 @@ export async function fetchPropertyDataLive(
     myRevPAR: calStats.myRevPAR,
     myOccupancy: calStats.myOccupancy,
     myADR: calStats.myADR,
-    currentPrice: currentPrice || calStats.myADR,
+    currentPrice: currentPrice || calStats.currentPrice || calStats.myADR,
     lastYearLowestSold: yearStats.lowestSoldPrice || calStats.lowestSoldPrice,
     avgBookingLength: avgBookingLength || undefined,
   };
