@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"C:\\\\Users\\\\tyler\\\\openclaw1\" status)",
+      "Bash(git -C \"C:\\\\Users\\\\tyler\\\\openclaw1\" diff)",
+      "Bash(git -C \"C:\\\\Users\\\\tyler\\\\openclaw1\" log --oneline -5)",
+      "Bash(git -C \"C:\\\\Users\\\\tyler\\\\openclaw1\" add skills/local-places/src/local_places/main.py)",
+      "Bash(git -C \"C:\\\\Users\\\\tyler\\\\openclaw1\" commit -m \"$\\(cat <<''EOF''\nfix\\(local-places\\): replace developer hostname with localhost in default server URL\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C \"C:\\\\Users\\\\tyler\\\\openclaw1\" push)",
+      "Bash(python3:*)",
+      "Bash(git -C \"C:\\\\Users\\\\tyler\\\\openclaw1\" status .env)",
+      "Bash(npx openclaw:*)",
+      "Bash(curl:*)",
+      "WebSearch",
+      "WebFetch(domain:developer.keydatadashboard.com)",
+      "Bash(npx tsx:*)",
+      "Bash(cygpath:*)",
+      "Bash(PREVIOUS_APS=0.85 CURRENT_TARGET_RENT=40000 npx tsx:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat\\(revenue-engine\\): merge v4.2 Bell Curve and Error Forecasting from pacific-revenue-engine\n\nPort the full decision tree from the legacy Google Apps Script repo into\nthe OpenClaw TypeScript engine.  Adds monthly Error Forecasting \\(3-multiplier\ndiagnosis with smoothed correction caps\\), weekly Bell Curve tactical scan\n\\(Back Half rate increases, Front Half price drops / sliding-scale promotions\\),\nmarket state detection \\(HOT/COLD/NEUTRAL → operating modes\\), APS decay,\nExtended Stay Incentive, Last Minute Deal, and corrected Key Data API POST\nendpoints \\(/api/v1/ota/market/kpis/week and /month\\).\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "WebFetch(domain:support.keydatadashboard.com)",
+      "Bash(grep:*)",
+      "WebFetch(domain:documenter.getpostman.com)",
+      "WebFetch(domain:czmjy04.na1.hs-sales-engage.com)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(revenue-engine\\): connect to live Key Data API\n\nSwitch base URL from api.keydatadashboard.com to api-beta.keydatadashboard.com\nper official Postman docs, use real UUID market identifiers instead of slugs,\naggregate per-OTA rows \\(airbnb/vrbo\\) into per-date averages, widen historical\nlookback to 6 months, and extract avg_stay_length from live KPI data.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "WebFetch(domain:developer.hospitable.com)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat\\(revenue-engine\\): add Hospitable API client for live property data\n\nPort HospitableClient.gs to TypeScript and wire it into fetchPropertyStatsSafe\\(\\)\nso the engine pulls live RevPAR, occupancy, ADR, and pricing from Hospitable''s\ncalendar and reservations endpoints. Falls back to demo data when no API key is set.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(hospitable\\): match actual API v2 response structure and load dotenv\n\nUpdate calendar parsing for nested data.days[] with status.reason and\nprice.amount \\(cents\\). Add required properties[] filter to reservations\nendpoint. Load dotenv in main.ts so .env credentials are available at runtime.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(npm install:*)",
+      "Bash(more:*)",
+      "Bash(npx:*)",
+      "Bash(node -e:*)",
+      "Bash(npm --version:*)",
+      "Bash(findstr:*)",
+      "Bash(for file in C:Userstyleropenclaw1srcrevenue-engine*.ts)",
+      "Bash(do wc -l \"$file\")",
+      "Bash(done)",
+      "Bash(find:*)"
+    ]
+  }
+}
