@@ -53,6 +53,71 @@ interface HospitableProperty {
   name?: string;
   listed?: boolean;
   currency?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  person_capacity?: number;
+  property_type?: string;
+  type?: string;
+}
+
+// ── Property details (bedrooms, bathrooms, type) ─────────────────────
+
+export interface PropertyDetails {
+  id: string;
+  name: string;
+  bedrooms: number;
+  bathrooms: number;
+  propertyType: string;
+  sleeps: number;
+  amenities: string[];
+}
+
+export async function fetchPropertyDetails(
+  config: HospitableConfig,
+  propertyId: string,
+): Promise<PropertyDetails> {
+  const res = await hospGet<{ data?: HospitableProperty & {
+    bedrooms?: number;
+    bathrooms?: number | string;
+    person_capacity?: number;
+    property_type?: string;
+    type?: string;
+    summary?: string;
+    amenities?: string[];
+    capacity?: { guests?: number };
+  } }>(config, `/properties/${propertyId}`);
+
+  const p = res?.data;
+
+  // Parse bedrooms/bathrooms from API fields or fall back to summary text
+  let bedrooms = Number(p?.bedrooms ?? 0);
+  let bathrooms = Number(p?.bathrooms ?? 0);
+  let sleeps = Number(p?.person_capacity ?? 0);
+
+  // Some properties embed details in summary (e.g. "Sleeps 8 | 3 bedrooms | 2 baths")
+  if ((!bedrooms || !bathrooms) && p?.summary) {
+    const bedMatch = p.summary.match(/(\d+)\s*bed(?:room)?s?/i);
+    const bathMatch = p.summary.match(/(\d+)\s*bath(?:room)?s?/i);
+    const sleepMatch = p.summary.match(/sleeps?\s*(\d+)/i);
+    if (bedMatch && !bedrooms) bedrooms = Number(bedMatch[1]);
+    if (bathMatch && !bathrooms) bathrooms = Number(bathMatch[1]);
+    if (sleepMatch && !sleeps) sleeps = Number(sleepMatch[1]);
+  }
+
+  // Amenities come as a flat string array from Hospitable (e.g. ["ac", "bbq_area", "pool"])
+  const amenities = Array.isArray(p?.amenities)
+    ? p.amenities.map(a => a.toLowerCase().replace(/\s+/g, '_'))
+    : [];
+
+  return {
+    id: p?.id ?? propertyId,
+    name: p?.name ?? 'Unknown',
+    bedrooms,
+    bathrooms,
+    propertyType: (p?.property_type ?? p?.type ?? 'house').toLowerCase(),
+    sleeps: sleeps || Number(p?.capacity?.guests ?? 0),
+    amenities,
+  };
 }
 
 export async function listProperties(

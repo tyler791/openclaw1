@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 // ═══════════════════════════════════════════════════════════════════════
-//  Pacific Properties Revenue Engine v4.2 — Full Merged Runner
+//  Pacific Properties Revenue Engine v4.3 — Context Aware Comp Filtering
 //  Monthly Strategic Review (Error Forecasting) + Weekly Bell Curve Scan
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -11,7 +11,8 @@ import { RevenueEngine } from './formulas';
 import { evaluatePromotion, scanAllPromotions } from './promotion-logic';
 import { runMonthlyErrorForecasting } from './error-forecasting';
 import { runWeeklyBellCurveReview, determineMarketState, getOperatingMode } from './bell-curve';
-import { fetchMarketDataSafe, fetchPropertyStatsSafe, type KeyDataConfig, type HospitableConfig } from './key-data-fetcher';
+import { fetchMarketDataSafe, fetchPropertyStatsSafe, type KeyDataConfig, type HospitableConfig, type ComparableFilters } from './key-data-fetcher';
+import { fetchPropertyDetails } from './hospitable-client';
 import type { Recommendation } from './types';
 
 // ── Configuration ───────────────────────────────────────────────────
@@ -73,8 +74,57 @@ export async function generateReport(opts: RevenueReportOptions = {}): Promise<s
   const lines: string[] = [];
   const L = (s = '') => lines.push(s);
 
-  // 1. Fetch Data
-  const marketResult = await fetchMarketDataSafe(config, marketUuid);
+  // 1. Fetch property details for comp filtering
+  let compFilters: ComparableFilters | undefined;
+  let filterLabel = 'Whole Market';
+  if (hospConfig.apiKey && hospPropertyId) {
+    try {
+      const details = await fetchPropertyDetails(hospConfig, hospPropertyId);
+      const KEY_DATA_AMENITIES = ['pool', 'hot_tub', 'water_view', 'pet_friendly', 'waterfront', 'bbq_area', 'beach_access'];
+      const matchedAmenities = details.amenities.filter(a => KEY_DATA_AMENITIES.includes(a));
+      compFilters = {
+        bedrooms: details.bedrooms || undefined,
+        property_type: details.propertyType || undefined,
+        min_sleeps: details.sleeps || undefined,
+        amenities: matchedAmenities.length > 0 ? matchedAmenities : undefined,
+      };
+      const parts: string[] = [];
+      if (details.bedrooms) parts.push(`${details.bedrooms} Bed`);
+      if (details.bathrooms) parts.push(`${details.bathrooms} Bath`);
+      if (details.sleeps) parts.push(`Sleeps ${details.sleeps}`);
+      if (details.propertyType) parts.push(details.propertyType);
+      if (matchedAmenities.length > 0) parts.push(matchedAmenities.join(', '));
+      if (parts.length > 0) filterLabel = parts.join(' / ');
+    } catch { /* fall through to whole market */ }
+  }
+
+  // 2. Fetch data with tiered comp fallback
+  const MIN_COMPS = 10;
+  let marketResult: Awaited<ReturnType<typeof fetchMarketDataSafe>>;
+  let compTier = 'Broad';
+
+  if (compFilters) {
+    marketResult = await fetchMarketDataSafe(config, marketUuid, compFilters);
+    compTier = 'Strict';
+    if (marketResult.dataPoints < MIN_COMPS) {
+      marketResult = await fetchMarketDataSafe(config, marketUuid, {
+        bedrooms: compFilters.bedrooms, min_sleeps: compFilters.min_sleeps,
+      });
+      compTier = 'Standard';
+      filterLabel = `${compFilters.bedrooms ?? '?'} Bed / Sleeps ${compFilters.min_sleeps ?? '?'}`;
+      if (marketResult.dataPoints < MIN_COMPS) {
+        marketResult = await fetchMarketDataSafe(config, marketUuid, {
+          bedrooms: compFilters.bedrooms,
+        });
+        compTier = 'Broad';
+        filterLabel = `${compFilters.bedrooms ?? '?'} Bed`;
+      }
+    }
+  } else {
+    marketResult = await fetchMarketDataSafe(config, marketUuid);
+    compTier = 'Whole Market';
+  }
+
   const market = marketResult.data;
   const propResult = await fetchPropertyStatsSafe(hospConfig, hospPropertyId);
   const prop = propResult.data;
@@ -82,7 +132,7 @@ export async function generateReport(opts: RevenueReportOptions = {}): Promise<s
   const propSrc   = propResult.live   ? 'LIVE API' : 'FALLBACK';
   const src = `Market: ${marketSrc} | Property: ${propSrc}`;
 
-  // 2. Core Engine
+  // 3. Core Engine
   const perfIndex    = RevenueEngine.calculatePerformanceIndex(prop.myRevPAR, market.marketRevPAR);
   const newAPS       = RevenueEngine.calculateNewAPS(previousAPS, perfIndex);
   const annualTarget = RevenueEngine.calculateAnnualTarget(market.totalMarketAnnualRevPAR, newAPS);
@@ -91,8 +141,10 @@ export async function generateReport(opts: RevenueReportOptions = {}): Promise<s
   const centroid     = RevenueEngine.calculateDynamicCentroid(market.avgFutureMarketADR, newAPS);
   const basePrice    = RevenueEngine.calculateBasePrice(market.avgADR, newAPS);
 
-  L('PACIFIC PROPERTIES REVENUE ENGINE v4.2');
+  L('PACIFIC PROPERTIES REVENUE ENGINE v4.3 (Context Aware)');
   L(`Data source: ${src}`);
+  L(`Comp Set Tier: ${compTier} (${marketResult.dataPoints} comps)`);
+  L(`Comps Filter: ${filterLabel}`);
   L('');
   L('--- CORE ENGINE ---');
   L(`Performance Index: ${fx(perfIndex)}`);
@@ -182,22 +234,93 @@ export async function generateReport(opts: RevenueReportOptions = {}): Promise<s
 async function main() {
   console.log();
   console.log(div('═'));
-  console.log('  PACIFIC PROPERTIES REVENUE ENGINE  v4.2  (Full Merger)');
+  console.log('  PACIFIC PROPERTIES REVENUE ENGINE  v4.3  (Context Aware)');
   console.log(div('═'));
 
   // ── 1. Fetch Data ─────────────────────────────────────────────────
   console.log();
-  console.log('  [1/5]  Fetching Key Data market stats ...');
-  const marketResult = await fetchMarketDataSafe(API_CONFIG, MARKET_UUID);
+
+  // Step 1: Learn what the property is so we can filter comps
+  let compFilters: ComparableFilters | undefined;
+  let filterLabel = 'Whole Market (no filter)';
+  if (HOSPITABLE_CONFIG.apiKey && HOSPITABLE_PROPERTY_ID) {
+    console.log('  [1/6]  Fetching property details (Hospitable) ...');
+    try {
+      const details = await fetchPropertyDetails(HOSPITABLE_CONFIG, HOSPITABLE_PROPERTY_ID);
+      // Key Data recognizes specific amenity filters — pick the high-value ones from the property
+      const KEY_DATA_AMENITIES = ['pool', 'hot_tub', 'water_view', 'pet_friendly', 'waterfront', 'bbq_area', 'beach_access'];
+      const matchedAmenities = details.amenities.filter(a => KEY_DATA_AMENITIES.includes(a));
+      compFilters = {
+        bedrooms: details.bedrooms || undefined,
+        property_type: details.propertyType || undefined,
+        min_sleeps: details.sleeps || undefined,
+        amenities: matchedAmenities.length > 0 ? matchedAmenities : undefined,
+      };
+      const parts: string[] = [];
+      if (details.bedrooms) parts.push(`${details.bedrooms} Bed`);
+      if (details.bathrooms) parts.push(`${details.bathrooms} Bath`);
+      if (details.sleeps) parts.push(`Sleeps ${details.sleeps}`);
+      if (details.propertyType) parts.push(details.propertyType);
+      if (matchedAmenities.length > 0) parts.push(matchedAmenities.join(', '));
+      filterLabel = parts.length > 0 ? parts.join(' / ') : filterLabel;
+      console.log(`  Property: ${details.name}`);
+      console.log(`  Strict Filter: ${filterLabel}`);
+    } catch (err) {
+      console.warn(`  ⚠  Property details fetch failed: ${(err as Error).message}`);
+    }
+  }
+
+  // Step 2: Fetch market data with tiered comp fallback
+  const MIN_COMPS = 10;
+  let marketResult: Awaited<ReturnType<typeof fetchMarketDataSafe>>;
+  let compTier = 'Broad';
+
+  if (compFilters) {
+    // Tier 1: Strict — all filters (bedrooms + property_type + sleeps + amenities)
+    console.log('  [2/6]  Fetching market stats (Strict comps) ...');
+    marketResult = await fetchMarketDataSafe(API_CONFIG, MARKET_UUID, compFilters);
+    compTier = 'Strict';
+
+    if (marketResult.dataPoints < MIN_COMPS) {
+      // Tier 2: Standard — bedrooms + sleeps only
+      const standardFilters: typeof compFilters = {
+        bedrooms: compFilters.bedrooms,
+        min_sleeps: compFilters.min_sleeps,
+      };
+      console.log(`  ⚠  Only ${marketResult.dataPoints} comps (Strict). Retrying Standard ...`);
+      marketResult = await fetchMarketDataSafe(API_CONFIG, MARKET_UUID, standardFilters);
+      compTier = 'Standard';
+      filterLabel = `${compFilters.bedrooms ?? '?'} Bed / Sleeps ${compFilters.min_sleeps ?? '?'}`;
+
+      if (marketResult.dataPoints < MIN_COMPS) {
+        // Tier 3: Broad — bedrooms only
+        const broadFilters: typeof compFilters = {
+          bedrooms: compFilters.bedrooms,
+        };
+        console.log(`  ⚠  Only ${marketResult.dataPoints} comps (Standard). Retrying Broad ...`);
+        marketResult = await fetchMarketDataSafe(API_CONFIG, MARKET_UUID, broadFilters);
+        compTier = 'Broad';
+        filterLabel = `${compFilters.bedrooms ?? '?'} Bed`;
+      }
+    }
+  } else {
+    console.log('  [2/6]  Fetching Key Data market stats ...');
+    marketResult = await fetchMarketDataSafe(API_CONFIG, MARKET_UUID);
+    compTier = 'Whole Market';
+  }
+
   const market = marketResult.data;
 
-  console.log('  [2/5]  Fetching property stats (Hospitable) ...');
+  // Step 3: Fetch property performance
+  console.log('  [3/6]  Fetching property stats (Hospitable) ...');
   const propResult = await fetchPropertyStatsSafe(HOSPITABLE_CONFIG, HOSPITABLE_PROPERTY_ID);
   const prop = propResult.data;
 
   const marketSrc = marketResult.live ? 'LIVE API' : 'FALLBACK';
   const propSrc   = propResult.live   ? 'LIVE API' : 'FALLBACK';
   console.log(`\n  Market data: ${marketSrc}  |  Property data: ${propSrc}`);
+  console.log(`  Comp Set Tier: ${compTier}  (${marketResult.dataPoints} comps)`);
+  console.log(`  Comps Filter: ${filterLabel}`);
 
   // ── 2. Core Engine ────────────────────────────────────────────────
   console.log();

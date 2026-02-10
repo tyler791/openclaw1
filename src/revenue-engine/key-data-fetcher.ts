@@ -110,37 +110,40 @@ export async function fetchWeeklyKPIs(
     config, '/api/v1/ota/market/kpis/week', body,
   );
 
-  let totalOcc = 0, totalADR = 0, totalRevPAR = 0, totalStayLen = 0, n = 0;
+  let totalOcc = 0, totalADR = 0, totalRevPAR = 0, totalStayLen = 0, totalListings = 0, n = 0;
   const kpis = res?.data?.kpis;
   if (Array.isArray(kpis)) {
     // Aggregate airbnb + vrbo rows per date into a single average
     const byDate = aggregateByDate(kpis);
     for (const rows of byDate.values()) {
-      let dateOcc = 0, dateADR = 0, dateRevPAR = 0, dateStay = 0, count = 0;
+      let dateOcc = 0, dateADR = 0, dateRevPAR = 0, dateStay = 0, dateListings = 0, count = 0;
       for (const w of rows) {
         if (w.guest_occupancy != null && w.adr != null) {
-          dateOcc    += Number(w.guest_occupancy);
-          dateADR    += Number(w.adr);
-          dateRevPAR += Number(w.revpar ?? 0);
-          dateStay   += Number(w.avg_stay_length ?? 0);
+          dateOcc      += Number(w.guest_occupancy);
+          dateADR      += Number(w.adr);
+          dateRevPAR   += Number(w.revpar ?? 0);
+          dateStay     += Number(w.avg_stay_length ?? 0);
+          dateListings += Number(w.listing_count ?? 0);
           count++;
         }
       }
       if (count > 0) {
-        totalOcc    += dateOcc / count;
-        totalADR    += dateADR / count;
-        totalRevPAR += dateRevPAR / count;
-        totalStayLen += dateStay / count;
+        totalOcc      += dateOcc / count;
+        totalADR      += dateADR / count;
+        totalRevPAR   += dateRevPAR / count;
+        totalStayLen  += dateStay / count;
+        totalListings += dateListings / count;
         n++;
       }
     }
   }
 
   return {
-    occupancy:    n > 0 ? totalOcc / n : 0,
-    futureAdr:    n > 0 ? totalADR / n : 0,
-    futureRevPAR: n > 0 ? totalRevPAR / n : 0,
-    avgStayLength: n > 0 ? totalStayLen / n : 0,
+    occupancy:       n > 0 ? totalOcc / n : 0,
+    futureAdr:       n > 0 ? totalADR / n : 0,
+    futureRevPAR:    n > 0 ? totalRevPAR / n : 0,
+    avgStayLength:   n > 0 ? totalStayLen / n : 0,
+    avgListingCount: n > 0 ? Math.round(totalListings / n) : 0,
     dataPoints: n,
   };
 }
@@ -221,7 +224,7 @@ export async function fetchMarketDataSafe(
   config: KeyDataConfig,
   marketUuid: string,
   filters?: ComparableFilters,
-): Promise<{ data: MarketData; live: boolean }> {
+): Promise<{ data: MarketData; live: boolean; dataPoints: number }> {
   try {
     const today = new Date();
 
@@ -244,6 +247,7 @@ export async function fetchMarketDataSafe(
 
     return {
       live: true,
+      dataPoints: weekly.avgListingCount || monthly.dataPoints,
       data: {
         marketRevPAR:            monthly.marketRevPAR,
         marketOccupancy:         monthly.avgOccupancy,
@@ -257,7 +261,7 @@ export async function fetchMarketDataSafe(
     };
   } catch (err) {
     console.warn(`  ⚠  Live market fetch failed: ${(err as Error).message}`);
-    return { data: getFallbackMarketData(), live: false };
+    return { data: getFallbackMarketData(), live: false, dataPoints: 0 };
   }
 }
 
