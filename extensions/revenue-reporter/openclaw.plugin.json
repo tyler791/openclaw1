@@ -1,0 +1,10 @@
+{
+  "id": "revenue-reporter",
+  "name": "Revenue Reporter",
+  "description": "Run Pacific Properties Revenue Engine audit and send formatted reports.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
