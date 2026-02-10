@@ -15,10 +15,10 @@ import type { Recommendation } from './types';
 
 const API_CONFIG: KeyDataConfig = {
   apiKey: process.env.KEYDATA_API_KEY ?? '3bc432a3b3314cbeb7a02fb233c4b2ac',
-  baseUrl: process.env.KEYDATA_BASE_URL ?? 'https://api.keydatadashboard.com',
+  baseUrl: process.env.KEYDATA_BASE_URL ?? 'https://api-beta.keydatadashboard.com',
 };
 
-const MARKET_UUID   = process.env.MARKET_UUID   ?? 'maui-south';
+const MARKET_UUID   = process.env.MARKET_UUID   ?? 'e532e638-1ea0-4cb0-99df-db5599ade1d5';
 const PROPERTY_ID   = process.env.PROPERTY_ID   ?? 'pp-villa-kai-201';
 const PREVIOUS_APS  = Number(process.env.PREVIOUS_APS ?? '1.00');
 const CURRENT_TARGET_RENT = Number(process.env.CURRENT_TARGET_RENT ?? '65000');
@@ -49,9 +49,9 @@ export interface RevenueReportOptions {
 export async function generateReport(opts: RevenueReportOptions = {}): Promise<string> {
   const config: KeyDataConfig = {
     apiKey: opts.apiKey ?? process.env.KEYDATA_API_KEY ?? '3bc432a3b3314cbeb7a02fb233c4b2ac',
-    baseUrl: opts.baseUrl ?? process.env.KEYDATA_BASE_URL ?? 'https://api.keydatadashboard.com',
+    baseUrl: opts.baseUrl ?? process.env.KEYDATA_BASE_URL ?? 'https://api-beta.keydatadashboard.com',
   };
-  const marketUuid = opts.marketUuid ?? process.env.MARKET_UUID ?? 'maui-south';
+  const marketUuid = opts.marketUuid ?? process.env.MARKET_UUID ?? 'e532e638-1ea0-4cb0-99df-db5599ade1d5';
   const propertyId = opts.propertyId ?? process.env.PROPERTY_ID ?? 'pp-villa-kai-201';
   const previousAPS = opts.previousAPS ?? Number(process.env.PREVIOUS_APS ?? '1.00');
   const currentTargetRent = opts.currentTargetRent ?? Number(process.env.CURRENT_TARGET_RENT ?? '65000');
@@ -65,7 +65,9 @@ export async function generateReport(opts: RevenueReportOptions = {}): Promise<s
   const market = marketResult.data;
   const propResult = await fetchPropertyStatsSafe(config, propertyId);
   const prop = propResult.data;
-  const src = marketResult.live && propResult.live ? 'LIVE API' : 'FALLBACK (demo data)';
+  const marketSrc = marketResult.live ? 'LIVE API' : 'FALLBACK';
+  const propSrc   = propResult.live   ? 'LIVE API' : 'FALLBACK';
+  const src = `Market: ${marketSrc} | Property: ${propSrc}`;
 
   // 2. Core Engine
   const perfIndex    = RevenueEngine.calculatePerformanceIndex(prop.myRevPAR, market.marketRevPAR);
@@ -180,8 +182,9 @@ async function main() {
   const propResult = await fetchPropertyStatsSafe(API_CONFIG, PROPERTY_ID);
   const prop = propResult.data;
 
-  const src = marketResult.live && propResult.live ? 'LIVE API' : 'FALLBACK (demo data)';
-  console.log(`\n  Data source: ${src}`);
+  const marketSrc = marketResult.live ? 'LIVE API' : 'FALLBACK';
+  const propSrc   = propResult.live   ? 'LIVE API' : 'FALLBACK';
+  console.log(`\n  Market data: ${marketSrc}  |  Property data: ${propSrc}`);
 
   // ── 2. Core Engine ────────────────────────────────────────────────
   console.log();

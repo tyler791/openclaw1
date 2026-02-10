@@ -7,7 +7,7 @@
 
 import type { MarketData, PropertyData } from './types';
 
-const DEFAULT_BASE_URL = 'https://api.keydatadashboard.com';
+const DEFAULT_BASE_URL = 'https://api-beta.keydatadashboard.com';
 
 export interface KeyDataConfig {
   apiKey: string;
@@ -68,9 +68,24 @@ function buildApiFilters(filters?: ComparableFilters): Record<string, unknown> |
 // ── Weekly KPIs (future pacing) ─────────────────────────────────────
 
 interface WeeklyKPI {
+  date: string;
+  ota_source?: string;
   guest_occupancy: number | null;
   adr: number | null;
   revpar: number | null;
+  avg_stay_length: number | null;
+  listing_count: number | null;
+}
+
+// Aggregate per-OTA rows into per-date averages (API returns separate airbnb/vrbo rows).
+function aggregateByDate<T extends { date: string }>(kpis: T[]): Map<string, T[]> {
+  const byDate = new Map<string, T[]>();
+  for (const k of kpis) {
+    const arr = byDate.get(k.date) ?? [];
+    arr.push(k);
+    byDate.set(k.date, arr);
+  }
+  return byDate;
 }
 
 export async function fetchWeeklyKPIs(
@@ -93,23 +108,37 @@ export async function fetchWeeklyKPIs(
     config, '/api/v1/ota/market/kpis/week', body,
   );
 
-  let totalOcc = 0, totalADR = 0, totalRevPAR = 0, n = 0;
+  let totalOcc = 0, totalADR = 0, totalRevPAR = 0, totalStayLen = 0, n = 0;
   const kpis = res?.data?.kpis;
   if (Array.isArray(kpis)) {
-    for (const w of kpis) {
-      if (w.guest_occupancy != null && w.adr != null) {
-        totalOcc    += Number(w.guest_occupancy);
-        totalADR    += Number(w.adr);
-        totalRevPAR += Number(w.revpar ?? 0);
+    // Aggregate airbnb + vrbo rows per date into a single average
+    const byDate = aggregateByDate(kpis);
+    for (const rows of byDate.values()) {
+      let dateOcc = 0, dateADR = 0, dateRevPAR = 0, dateStay = 0, count = 0;
+      for (const w of rows) {
+        if (w.guest_occupancy != null && w.adr != null) {
+          dateOcc    += Number(w.guest_occupancy);
+          dateADR    += Number(w.adr);
+          dateRevPAR += Number(w.revpar ?? 0);
+          dateStay   += Number(w.avg_stay_length ?? 0);
+          count++;
+        }
+      }
+      if (count > 0) {
+        totalOcc    += dateOcc / count;
+        totalADR    += dateADR / count;
+        totalRevPAR += dateRevPAR / count;
+        totalStayLen += dateStay / count;
         n++;
       }
     }
   }
 
   return {
-    occupancy:  n > 0 ? totalOcc / n : 0,
-    futureAdr:  n > 0 ? totalADR / n : 0,
+    occupancy:    n > 0 ? totalOcc / n : 0,
+    futureAdr:    n > 0 ? totalADR / n : 0,
     futureRevPAR: n > 0 ? totalRevPAR / n : 0,
+    avgStayLength: n > 0 ? totalStayLen / n : 0,
     dataPoints: n,
   };
 }
@@ -117,11 +146,14 @@ export async function fetchWeeklyKPIs(
 // ── Monthly KPIs (historical) ───────────────────────────────────────
 
 interface MonthlyKPI {
+  date: string;
+  ota_source?: string;
   guest_occupancy: number | null;
   adr: number | null;
   revpar: number | null;
   guest_nights: number | null;
   available_nights: number | null;
+  avg_stay_length: number | null;
 }
 
 export async function fetchMonthlyKPIs(
@@ -144,17 +176,30 @@ export async function fetchMonthlyKPIs(
     config, '/api/v1/ota/market/kpis/month', body,
   );
 
-  let totalRevPAR = 0, totalOcc = 0, totalADR = 0, peakADR = 0, n = 0;
+  let totalRevPAR = 0, totalOcc = 0, totalADR = 0, peakADR = 0, totalStayLen = 0, n = 0;
   const kpis = res?.data?.kpis;
   if (Array.isArray(kpis)) {
-    for (const m of kpis) {
-      n++;
-      if (m.revpar != null)          totalRevPAR += Number(m.revpar);
-      if (m.guest_occupancy != null)  totalOcc    += Number(m.guest_occupancy);
-      if (m.adr != null) {
-        const adr = Number(m.adr);
-        totalADR += adr;
-        if (adr > peakADR) peakADR = adr;
+    // Aggregate airbnb + vrbo rows per date into a single average
+    const byDate = aggregateByDate(kpis);
+    for (const rows of byDate.values()) {
+      let dateRevPAR = 0, dateOcc = 0, dateADR = 0, dateStay = 0, count = 0;
+      for (const m of rows) {
+        if (m.adr != null) {
+          dateRevPAR += Number(m.revpar ?? 0);
+          dateOcc    += Number(m.guest_occupancy ?? 0);
+          dateADR    += Number(m.adr);
+          dateStay   += Number(m.avg_stay_length ?? 0);
+          count++;
+        }
+      }
+      if (count > 0) {
+        const avgDateADR = dateADR / count;
+        totalRevPAR  += dateRevPAR / count;
+        totalOcc     += dateOcc / count;
+        totalADR     += avgDateADR;
+        totalStayLen += dateStay / count;
+        if (avgDateADR > peakADR) peakADR = avgDateADR;
+        n++;
       }
     }
   }
@@ -163,8 +208,9 @@ export async function fetchMonthlyKPIs(
   const avgOccupancy  = n > 0 ? totalOcc / n : 0;
   const avgADR        = n > 0 ? totalADR / n : 0;
   const annualRevPar  = marketRevPAR * 365;
+  const avgStayLength = n > 0 ? totalStayLen / n : 0;
 
-  return { marketRevPAR, annualRevPar, avgOccupancy, avgADR, peakADR, dataPoints: n };
+  return { marketRevPAR, annualRevPar, avgOccupancy, avgADR, peakADR, avgStayLength, dataPoints: n };
 }
 
 // ── Fetch full MarketData (with fallback) ───────────────────────────
@@ -177,8 +223,8 @@ export async function fetchMarketDataSafe(
   try {
     const today = new Date();
 
-    // Historical: previous month
-    const histStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    // Historical: previous 6 months for a seasonally balanced average
+    const histStart = new Date(today.getFullYear(), today.getMonth() - 6, 1);
     const histEnd   = new Date(today.getFullYear(), today.getMonth(), 0);
     const fmtHistStart = histStart.toISOString().slice(0, 10);
     const fmtHistEnd   = histEnd.toISOString().slice(0, 10);
@@ -204,6 +250,7 @@ export async function fetchMarketDataSafe(
         avgFutureMarketADR:      weekly.futureAdr,
         totalMarketAnnualRevPAR: monthly.annualRevPar,
         avgADR:                  monthly.avgADR,
+        avgBookingLength:        weekly.avgStayLength || monthly.avgStayLength || undefined,
       },
     };
   } catch (err) {
