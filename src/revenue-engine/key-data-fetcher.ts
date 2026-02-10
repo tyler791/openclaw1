@@ -6,6 +6,8 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { MarketData, PropertyData } from './types';
+import { fetchPropertyDataLive, type HospitableConfig } from './hospitable-client';
+export type { HospitableConfig } from './hospitable-client';
 
 const DEFAULT_BASE_URL = 'https://api-beta.keydatadashboard.com';
 
@@ -260,12 +262,19 @@ export async function fetchMarketDataSafe(
 }
 
 export async function fetchPropertyStatsSafe(
-  config: KeyDataConfig,
-  _propertyId: string,
+  hospConfig: HospitableConfig,
+  propertyId: string,
 ): Promise<{ data: PropertyData; live: boolean }> {
-  // Property stats come from Hospitable API in production.
-  // For now, use fallback data.
-  return { data: getFallbackPropertyData(), live: false };
+  if (!hospConfig.apiKey || !propertyId) {
+    return { data: getFallbackPropertyData(), live: false };
+  }
+  try {
+    const data = await fetchPropertyDataLive(hospConfig, propertyId);
+    return { data, live: true };
+  } catch (err) {
+    console.warn(`  ⚠  Live property fetch failed: ${(err as Error).message}`);
+    return { data: getFallbackPropertyData(), live: false };
+  }
 }
 
 // ── Fallback Data (Maui comp set) ───────────────────────────────────

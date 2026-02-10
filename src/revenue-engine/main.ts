@@ -8,7 +8,7 @@ import { RevenueEngine } from './formulas';
 import { evaluatePromotion, scanAllPromotions } from './promotion-logic';
 import { runMonthlyErrorForecasting } from './error-forecasting';
 import { runWeeklyBellCurveReview, determineMarketState, getOperatingMode } from './bell-curve';
-import { fetchMarketDataSafe, fetchPropertyStatsSafe, type KeyDataConfig } from './key-data-fetcher';
+import { fetchMarketDataSafe, fetchPropertyStatsSafe, type KeyDataConfig, type HospitableConfig } from './key-data-fetcher';
 import type { Recommendation } from './types';
 
 // ── Configuration ───────────────────────────────────────────────────
@@ -18,8 +18,13 @@ const API_CONFIG: KeyDataConfig = {
   baseUrl: process.env.KEYDATA_BASE_URL ?? 'https://api-beta.keydatadashboard.com',
 };
 
-const MARKET_UUID   = process.env.MARKET_UUID   ?? 'e532e638-1ea0-4cb0-99df-db5599ade1d5';
-const PROPERTY_ID   = process.env.PROPERTY_ID   ?? 'pp-villa-kai-201';
+const HOSPITABLE_CONFIG: HospitableConfig = {
+  apiKey: process.env.HOSPITABLE_API_KEY ?? '',
+  baseUrl: process.env.HOSPITABLE_BASE_URL ?? 'https://public.api.hospitable.com/v2',
+};
+
+const MARKET_UUID          = process.env.MARKET_UUID          ?? 'e532e638-1ea0-4cb0-99df-db5599ade1d5';
+const HOSPITABLE_PROPERTY_ID = process.env.HOSPITABLE_PROPERTY_ID ?? '';
 const PREVIOUS_APS  = Number(process.env.PREVIOUS_APS ?? '1.00');
 const CURRENT_TARGET_RENT = Number(process.env.CURRENT_TARGET_RENT ?? '65000');
 const DAYS_OUT      = Number(process.env.DAYS_OUT ?? '21');
@@ -40,7 +45,8 @@ export interface RevenueReportOptions {
   apiKey?: string;
   baseUrl?: string;
   marketUuid?: string;
-  propertyId?: string;
+  hospitable?: { apiKey?: string; baseUrl?: string };
+  hospitablePropertyId?: string;
   previousAPS?: number;
   currentTargetRent?: number;
   daysOut?: number;
@@ -51,8 +57,12 @@ export async function generateReport(opts: RevenueReportOptions = {}): Promise<s
     apiKey: opts.apiKey ?? process.env.KEYDATA_API_KEY ?? '3bc432a3b3314cbeb7a02fb233c4b2ac',
     baseUrl: opts.baseUrl ?? process.env.KEYDATA_BASE_URL ?? 'https://api-beta.keydatadashboard.com',
   };
+  const hospConfig: HospitableConfig = {
+    apiKey: opts.hospitable?.apiKey ?? process.env.HOSPITABLE_API_KEY ?? '',
+    baseUrl: opts.hospitable?.baseUrl ?? process.env.HOSPITABLE_BASE_URL ?? 'https://public.api.hospitable.com/v2',
+  };
   const marketUuid = opts.marketUuid ?? process.env.MARKET_UUID ?? 'e532e638-1ea0-4cb0-99df-db5599ade1d5';
-  const propertyId = opts.propertyId ?? process.env.PROPERTY_ID ?? 'pp-villa-kai-201';
+  const hospPropertyId = opts.hospitablePropertyId ?? process.env.HOSPITABLE_PROPERTY_ID ?? '';
   const previousAPS = opts.previousAPS ?? Number(process.env.PREVIOUS_APS ?? '1.00');
   const currentTargetRent = opts.currentTargetRent ?? Number(process.env.CURRENT_TARGET_RENT ?? '65000');
   const daysOut = opts.daysOut ?? Number(process.env.DAYS_OUT ?? '21');
@@ -63,7 +73,7 @@ export async function generateReport(opts: RevenueReportOptions = {}): Promise<s
   // 1. Fetch Data
   const marketResult = await fetchMarketDataSafe(config, marketUuid);
   const market = marketResult.data;
-  const propResult = await fetchPropertyStatsSafe(config, propertyId);
+  const propResult = await fetchPropertyStatsSafe(hospConfig, hospPropertyId);
   const prop = propResult.data;
   const marketSrc = marketResult.live ? 'LIVE API' : 'FALLBACK';
   const propSrc   = propResult.live   ? 'LIVE API' : 'FALLBACK';
@@ -178,8 +188,8 @@ async function main() {
   const marketResult = await fetchMarketDataSafe(API_CONFIG, MARKET_UUID);
   const market = marketResult.data;
 
-  console.log('  [2/5]  Fetching property stats ...');
-  const propResult = await fetchPropertyStatsSafe(API_CONFIG, PROPERTY_ID);
+  console.log('  [2/5]  Fetching property stats (Hospitable) ...');
+  const propResult = await fetchPropertyStatsSafe(HOSPITABLE_CONFIG, HOSPITABLE_PROPERTY_ID);
   const prop = propResult.data;
 
   const marketSrc = marketResult.live ? 'LIVE API' : 'FALLBACK';
