@@ -7,12 +7,14 @@
 import { config as loadEnv } from 'dotenv';
 loadEnv();
 
+import { writeFile, mkdir } from 'node:fs/promises';
+import { hasFlag, getFlagValue, getVerboseFlag } from '../cli/argv';
 import { RevenueEngine } from './formulas';
 import { evaluatePromotion, scanAllPromotions } from './promotion-logic';
 import { runMonthlyErrorForecasting } from './error-forecasting';
 import { runWeeklyBellCurveReview, determineMarketState, getOperatingMode } from './bell-curve';
 import { fetchMarketDataSafe, fetchPropertyStatsSafe, findMarketForLocation, type KeyDataConfig, type HospitableConfig, type ComparableFilters } from './key-data-fetcher';
-import { fetchPropertyDetails } from './hospitable-client';
+import { fetchPropertyDetails, listProperties } from './hospitable-client';
 import type { Recommendation } from './types';
 
 // ── Configuration ───────────────────────────────────────────────────
@@ -31,6 +33,44 @@ const HOSPITABLE_PROPERTY_ID = process.env.HOSPITABLE_PROPERTY_ID ?? '';
 const PREVIOUS_APS  = Number(process.env.PREVIOUS_APS ?? '1.00');
 const CURRENT_TARGET_RENT = Number(process.env.CURRENT_TARGET_RENT ?? '65000');
 const DAYS_OUT      = Number(process.env.DAYS_OUT ?? '21');
+
+// ── CLI Flags ───────────────────────────────────────────────────────
+
+function parseCliArgs() {
+  return {
+    verbose: getVerboseFlag(process.argv),
+    write: hasFlag(process.argv, '--write'),
+    property: getFlagValue(process.argv, '--property') ?? undefined,
+  };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function slugify(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+async function resolvePropertyId(
+  slug: string,
+  config: HospitableConfig,
+): Promise<{ id: string; slug: string }> {
+  if (UUID_RE.test(slug)) {
+    return { id: slug, slug };
+  }
+
+  const properties = await listProperties(config);
+  const match = properties.find(p => slugify(p.name) === slug);
+
+  if (match) {
+    return { id: match.id, slug };
+  }
+
+  console.error(`\n  Property "${slug}" not found. Available properties:`);
+  for (const p of properties) {
+    console.error(`    --property ${slugify(p.name).padEnd(30)} (${p.name})`);
+  }
+  process.exit(1);
+}
 
 // ── Formatting ──────────────────────────────────────────────────────
 
@@ -259,13 +299,30 @@ export async function generateReport(opts: RevenueReportOptions = {}): Promise<s
 // ── Main (CLI) ───────────────────────────────────────────────────
 
 async function main() {
-  console.log();
-  console.log(div('═'));
-  console.log('  PACIFIC PROPERTIES REVENUE ENGINE  v4.3  (Context Aware)');
-  console.log(div('═'));
+  const cliArgs = parseCliArgs();
+  const { verbose, write } = cliArgs;
+
+  // Output capture — log() prints to console AND collects for --write
+  const lines: string[] = [];
+  const log = (s = '') => { console.log(s); lines.push(s); };
+
+  // ── Resolve --property flag ────────────────────────────────────────
+  let propertyId = HOSPITABLE_PROPERTY_ID;
+  let propertySlug = '';
+
+  if (cliArgs.property) {
+    const resolved = await resolvePropertyId(cliArgs.property, HOSPITABLE_CONFIG);
+    propertyId = resolved.id;
+    propertySlug = resolved.slug;
+  }
+
+  log();
+  log(div('═'));
+  log('  PACIFIC PROPERTIES REVENUE ENGINE  v4.3  (Context Aware)');
+  log(div('═'));
 
   // ── 1. Fetch Data ─────────────────────────────────────────────────
-  console.log();
+  log();
 
   // Step 1: Learn what the property is so we can filter comps + detect market
   let compFilters: ComparableFilters | undefined;
@@ -274,33 +331,50 @@ async function main() {
   let locationLabel = '';
   let marketName = '';
 
-  if (HOSPITABLE_CONFIG.apiKey && HOSPITABLE_PROPERTY_ID) {
-    console.log('  [1/6]  Fetching property details (Hospitable) ...');
+  if (HOSPITABLE_CONFIG.apiKey && propertyId) {
+    log('  [1/6]  Fetching property details (Hospitable) ...');
     try {
-      const details = await fetchPropertyDetails(HOSPITABLE_CONFIG, HOSPITABLE_PROPERTY_ID);
-      console.log(`  Property: ${details.name}`);
+      const details = await fetchPropertyDetails(HOSPITABLE_CONFIG, propertyId);
+      log(`  Property: ${details.name}`);
+
+      // Set slug from property name if not already set from CLI
+      if (!propertySlug) {
+        propertySlug = slugify(details.name);
+      }
 
       // Dynamic market detection from property location
       if (details.city) {
         locationLabel = details.state ? `${details.city}, ${details.state}` : details.city;
-        console.log(`  📍 Detected Location: ${locationLabel}`);
+        log(`  Detected Location: ${locationLabel}`);
         try {
           const matched = await findMarketForLocation(API_CONFIG, details.city, details.state);
           if (matched && matched.id) {
             if (matched.subscribed) {
               marketUuid = matched.id;
               marketName = matched.name;
-              console.log(`  🎯 Matched Market: ${matched.name} (${matched.id})`);
+              log(`  Matched Market: ${matched.name} (${matched.id})`);
             } else {
-              console.log(`  🎯 Found Market: ${matched.name} (not subscribed — using fallback market)`);
+              log(`  Found Market: ${matched.name} (not subscribed — using fallback market)`);
               marketName = matched.name + ' (not subscribed)';
             }
           } else {
-            console.warn(`  ⚠  No Key Data market found for "${details.city}". Using fallback UUID.`);
+            log(`  WARNING: No Key Data market found for "${details.city}". Using fallback UUID.`);
           }
         } catch (err) {
-          console.warn(`  ⚠  Market lookup failed: ${(err as Error).message}`);
+          log(`  WARNING: Market lookup failed: ${(err as Error).message}`);
         }
+      }
+
+      if (verbose) {
+        log();
+        log('  [VERBOSE] Property Details:');
+        log(`    bedrooms: ${details.bedrooms}`);
+        log(`    bathrooms: ${details.bathrooms}`);
+        log(`    sleeps: ${details.sleeps}`);
+        log(`    propertyType: ${details.propertyType}`);
+        log(`    amenities: ${details.amenities.join(', ') || '(none)'}`);
+        log(`    city: ${details.city}`);
+        log(`    state: ${details.state}`);
       }
 
       // Key Data recognizes specific amenity filters — pick the high-value ones from the property
@@ -319,14 +393,14 @@ async function main() {
       if (details.propertyType) parts.push(details.propertyType);
       if (matchedAmenities.length > 0) parts.push(matchedAmenities.join(', '));
       filterLabel = parts.length > 0 ? parts.join(' / ') : filterLabel;
-      console.log(`  Strict Filter: ${filterLabel}`);
+      log(`  Strict Filter: ${filterLabel}`);
     } catch (err) {
-      console.warn(`  ⚠  Property details fetch failed: ${(err as Error).message}`);
+      log(`  WARNING: Property details fetch failed: ${(err as Error).message}`);
     }
   }
 
   if (!marketUuid) {
-    console.error('  ✖  No market UUID available. Set MARKET_UUID in .env or ensure property has a valid location.');
+    console.error('  No market UUID available. Set MARKET_UUID in .env or ensure property has a valid location.');
     process.exit(1);
   }
 
@@ -337,7 +411,7 @@ async function main() {
 
   if (compFilters) {
     // Tier 1: Strict — all filters (bedrooms + property_type + sleeps + amenities)
-    console.log('  [2/6]  Fetching market stats (Strict comps) ...');
+    log('  [2/6]  Fetching market stats (Strict comps) ...');
     marketResult = await fetchMarketDataSafe(API_CONFIG, marketUuid, compFilters);
     compTier = 'Strict';
 
@@ -347,7 +421,7 @@ async function main() {
         bedrooms: compFilters.bedrooms,
         min_sleeps: compFilters.min_sleeps,
       };
-      console.log(`  ⚠  Only ${marketResult.dataPoints} comps (Strict). Retrying Standard ...`);
+      log(`  Only ${marketResult.dataPoints} comps (Strict). Retrying Standard ...`);
       marketResult = await fetchMarketDataSafe(API_CONFIG, marketUuid, standardFilters);
       compTier = 'Standard';
       filterLabel = `${compFilters.bedrooms ?? '?'} Bed / Sleeps ${compFilters.min_sleeps ?? '?'}`;
@@ -357,38 +431,62 @@ async function main() {
         const broadFilters: typeof compFilters = {
           bedrooms: compFilters.bedrooms,
         };
-        console.log(`  ⚠  Only ${marketResult.dataPoints} comps (Standard). Retrying Broad ...`);
+        log(`  Only ${marketResult.dataPoints} comps (Standard). Retrying Broad ...`);
         marketResult = await fetchMarketDataSafe(API_CONFIG, marketUuid, broadFilters);
         compTier = 'Broad';
         filterLabel = `${compFilters.bedrooms ?? '?'} Bed`;
       }
     }
   } else {
-    console.log('  [2/6]  Fetching Key Data market stats ...');
+    log('  [2/6]  Fetching Key Data market stats ...');
     marketResult = await fetchMarketDataSafe(API_CONFIG, marketUuid);
     compTier = 'Whole Market';
   }
 
   const market = marketResult.data;
 
+  if (verbose) {
+    log();
+    log('  [VERBOSE] Market Data (raw):');
+    log(`    marketRevPAR: ${market.marketRevPAR}`);
+    log(`    marketOccupancy: ${market.marketOccupancy}`);
+    log(`    market20thPctlADR: ${market.market20thPctlADR}`);
+    log(`    peakFutureADR: ${market.peakFutureADR}`);
+    log(`    avgFutureMarketADR: ${market.avgFutureMarketADR}`);
+    log(`    totalMarketAnnualRevPAR: ${market.totalMarketAnnualRevPAR}`);
+    log(`    avgADR: ${market.avgADR}`);
+    log(`    avgBookingLength: ${market.avgBookingLength ?? 'N/A'}`);
+  }
+
   // Step 3: Fetch property performance
-  console.log('  [3/6]  Fetching property stats (Hospitable) ...');
-  const propResult = await fetchPropertyStatsSafe(HOSPITABLE_CONFIG, HOSPITABLE_PROPERTY_ID);
+  log('  [3/6]  Fetching property stats (Hospitable) ...');
+  const propResult = await fetchPropertyStatsSafe(HOSPITABLE_CONFIG, propertyId);
   const prop = propResult.data;
+
+  if (verbose) {
+    log();
+    log('  [VERBOSE] Property Stats (raw):');
+    log(`    myRevPAR: ${prop.myRevPAR}`);
+    log(`    myOccupancy: ${prop.myOccupancy}`);
+    log(`    myADR: ${prop.myADR ?? 'N/A'}`);
+    log(`    currentPrice: ${prop.currentPrice}`);
+    log(`    lastYearLowestSold: ${prop.lastYearLowestSold}`);
+    log(`    avgBookingLength: ${prop.avgBookingLength ?? 'N/A'}`);
+  }
 
   const marketSrc = marketResult.live ? 'LIVE API' : 'FALLBACK';
   const propSrc   = propResult.live   ? 'LIVE API' : 'FALLBACK';
-  console.log(`\n  Market data: ${marketSrc}  |  Property data: ${propSrc}`);
-  if (locationLabel) console.log(`  📍 Location: ${locationLabel}`);
-  if (marketName) console.log(`  🎯 Market: ${marketName}`);
-  console.log(`  Comp Set Tier: ${compTier}  (${marketResult.dataPoints} comps)`);
-  console.log(`  Comps Filter: ${filterLabel}`);
+  log(`\n  Market data: ${marketSrc}  |  Property data: ${propSrc}`);
+  if (locationLabel) log(`  Location: ${locationLabel}`);
+  if (marketName) log(`  Market: ${marketName}`);
+  log(`  Comp Set Tier: ${compTier}  (${marketResult.dataPoints} comps)`);
+  log(`  Comps Filter: ${filterLabel}`);
 
   // ── 2. Core Engine ────────────────────────────────────────────────
-  console.log();
-  console.log(div('═'));
-  console.log('  SECTION A — CORE ENGINE (v4.1 Formulas)');
-  console.log(div('═'));
+  log();
+  log(div('═'));
+  log('  SECTION A — CORE ENGINE (v4.1 Formulas)');
+  log(div('═'));
 
   const perfIndex    = RevenueEngine.calculatePerformanceIndex(prop.myRevPAR, market.marketRevPAR);
   const newAPS       = RevenueEngine.calculateNewAPS(PREVIOUS_APS, perfIndex);
@@ -398,20 +496,34 @@ async function main() {
   const centroid     = RevenueEngine.calculateDynamicCentroid(market.avgFutureMarketADR, newAPS);
   const basePrice    = RevenueEngine.calculateBasePrice(market.avgADR, newAPS);
 
-  console.log();
-  console.log(row('Performance Index',            fx(perfIndex)));
-  console.log(row('New APS (PID 70/30)',           fx(newAPS)));
-  console.log(row('Annual Revenue Target',         dollar(annualTarget)));
-  console.log(row('Min Nightly Price',             dollar(minPrice)));
-  console.log(row('Max Nightly Price',             dollar(maxPrice)));
-  console.log(row('Dynamic Centroid',              dollar(centroid)));
-  console.log(row('Base Price (ADR × APS)',        dollar(basePrice)));
+  log();
+  log(row('Performance Index',            fx(perfIndex)));
+  log(row('New APS (PID 70/30)',           fx(newAPS)));
+  log(row('Annual Revenue Target',         dollar(annualTarget)));
+  log(row('Min Nightly Price',             dollar(minPrice)));
+  log(row('Max Nightly Price',             dollar(maxPrice)));
+  log(row('Dynamic Centroid',              dollar(centroid)));
+  log(row('Base Price (ADR × APS)',        dollar(basePrice)));
+
+  if (verbose) {
+    log();
+    log('  [VERBOSE] Core Engine Inputs:');
+    log(`    previousAPS: ${PREVIOUS_APS}`);
+    log(`    market.avgADR: ${market.avgADR}`);
+    log(`    market.totalMarketAnnualRevPAR: ${market.totalMarketAnnualRevPAR}`);
+    log(`    market.marketRevPAR: ${market.marketRevPAR}`);
+    log(`    market.market20thPctlADR: ${market.market20thPctlADR}`);
+    log(`    market.peakFutureADR: ${market.peakFutureADR}`);
+    log(`    market.avgFutureMarketADR: ${market.avgFutureMarketADR}`);
+    log(`    prop.myRevPAR: ${prop.myRevPAR}`);
+    log(`    prop.lastYearLowestSold: ${prop.lastYearLowestSold}`);
+  }
 
   // ── 3. Error Forecasting (Monthly) ────────────────────────────────
-  console.log();
-  console.log(div('═'));
-  console.log('  SECTION B — ERROR FORECASTING (Monthly Strategic Review)');
-  console.log(div('═'));
+  log();
+  log(div('═'));
+  log('  SECTION B — ERROR FORECASTING (Monthly Strategic Review)');
+  log(div('═'));
 
   const monthly = runMonthlyErrorForecasting(
     prop.myOccupancy,
@@ -423,27 +535,34 @@ async function main() {
     market.totalMarketAnnualRevPAR,
   );
 
-  console.log();
-  console.log('  Performance Multipliers:');
-  console.log(row('    Occupancy Multiplier',     fx(monthly.metrics.occupancy, 2) + 'x'));
-  console.log(row('    RevPAR Multiplier',         fx(monthly.metrics.revPAR, 2) + 'x'));
-  console.log(row('    ADR Multiplier',            fx(monthly.metrics.adr, 2) + 'x'));
-  console.log();
-  console.log(row('  Diagnosis',                   monthly.diagnosis.type));
-  console.log(row('  Explanation',                 monthly.diagnosis.explanation));
-  console.log();
-  console.log(row('  Correction Action',           monthly.correction.adjustmentType));
-  console.log(row('  Previous Target Rent',        dollar(monthly.correction.previousTargetRent)));
-  console.log(row('  New Target Rent',             dollar(monthly.correction.newTargetRent)));
-  console.log(row('  Applied Multiplier',          fx(monthly.correction.appliedMultiplier, 2) + 'x'));
-  console.log(row('  Adjustment',                  dollar(monthly.correction.adjustmentAmount) +
+  log();
+  log('  Performance Multipliers:');
+  log(row('    Occupancy Multiplier',     fx(monthly.metrics.occupancy, 2) + 'x'));
+  log(row('    RevPAR Multiplier',         fx(monthly.metrics.revPAR, 2) + 'x'));
+  log(row('    ADR Multiplier',            fx(monthly.metrics.adr, 2) + 'x'));
+  log();
+  log(row('  Diagnosis',                   monthly.diagnosis.type));
+  log(row('  Explanation',                 monthly.diagnosis.explanation));
+  log();
+  log(row('  Correction Action',           monthly.correction.adjustmentType));
+  log(row('  Previous Target Rent',        dollar(monthly.correction.previousTargetRent)));
+  log(row('  New Target Rent',             dollar(monthly.correction.newTargetRent)));
+  log(row('  Applied Multiplier',          fx(monthly.correction.appliedMultiplier, 2) + 'x'));
+  log(row('  Adjustment',                  dollar(monthly.correction.adjustmentAmount) +
     ` (${monthly.correction.adjustmentPercentage >= 0 ? '+' : ''}${(monthly.correction.adjustmentPercentage * 100).toFixed(1)}%)`));
 
+  if (verbose) {
+    log();
+    log('  [VERBOSE] Error Forecasting Diagnosis:');
+    log(`    priceErrorFactor: ${monthly.diagnosis.priceErrorFactor}`);
+    log(`    correctionFactor: ${monthly.diagnosis.correctionFactor}`);
+  }
+
   // ── 4. Bell Curve Decision Tree (Weekly) ──────────────────────────
-  console.log();
-  console.log(div('═'));
-  console.log('  SECTION C — BELL CURVE DECISION TREE (Weekly Tactical Scan)');
-  console.log(div('═'));
+  log();
+  log(div('═'));
+  log('  SECTION C — BELL CURVE DECISION TREE (Weekly Tactical Scan)');
+  log(div('═'));
 
   const weekly = runWeeklyBellCurveReview(
     prop.myOccupancy,
@@ -454,30 +573,38 @@ async function main() {
     market.avgADR,
   );
 
-  console.log();
-  console.log(row('  Market State',                weekly.marketState));
-  console.log(row('  Operating Mode',              weekly.operatingMode));
-  console.log(row('  Transition Point',            weekly.bellCurve.transitionPoint + ' days'));
-  console.log(row('  Back Half Days Analyzed',     String(weekly.bellCurve.backHalfDays)));
-  console.log(row('  Front Half Days Analyzed',    String(weekly.bellCurve.frontHalfDays)));
-  console.log();
-  console.log(row('  Total Recommendations',       String(weekly.counts.total)));
-  console.log(row('    Rate Increases',            String(weekly.counts.rateIncreases)));
-  console.log(row('    Price Drops',               String(weekly.counts.priceDrops)));
-  console.log(row('    Promotions',                String(weekly.counts.promotions)));
+  log();
+  log(row('  Market State',                weekly.marketState));
+  log(row('  Operating Mode',              weekly.operatingMode));
+  log(row('  Transition Point',            weekly.bellCurve.transitionPoint + ' days'));
+  log(row('  Back Half Days Analyzed',     String(weekly.bellCurve.backHalfDays)));
+  log(row('  Front Half Days Analyzed',    String(weekly.bellCurve.frontHalfDays)));
+  log();
+  log(row('  Total Recommendations',       String(weekly.counts.total)));
+  log(row('    Rate Increases',            String(weekly.counts.rateIncreases)));
+  log(row('    Price Drops',               String(weekly.counts.priceDrops)));
+  log(row('    Promotions',                String(weekly.counts.promotions)));
+
+  if (verbose) {
+    log();
+    log('  [VERBOSE] Bell Curve Details:');
+    log(`    transitionPoint: ${weekly.bellCurve.transitionPoint}`);
+    log(`    backHalfDays: ${weekly.bellCurve.backHalfDays}`);
+    log(`    frontHalfDays: ${weekly.bellCurve.frontHalfDays}`);
+  }
 
   if (weekly.recommendations.length > 0) {
-    console.log();
-    console.log('  ' + div('─', 70));
-    console.log('  Day-by-Day Recommendations:');
-    console.log('  ' + div('─', 70));
+    log();
+    log('  ' + div('─', 70));
+    log('  Day-by-Day Recommendations:');
+    log('  ' + div('─', 70));
 
     const hdr = `  ${'Date'.padEnd(12)} ${'Type'.padEnd(20)} ${'Value'.padEnd(12)} ${'Current'.padEnd(10)} ${'Suggest'.padEnd(10)} Phase`;
-    console.log(hdr);
-    console.log('  ' + div('─', 70));
+    log(hdr);
+    log('  ' + div('─', 70));
 
     for (const r of weekly.recommendations) {
-      console.log(
+      log(
         `  ${r.date.padEnd(12)} ${r.type.padEnd(20)} ${r.value.padEnd(12)} ` +
         `${dollar(r.currentPrice).padEnd(10)} ${dollar(r.suggestedPrice).padEnd(10)} ${r.phase}`,
       );
@@ -485,14 +612,14 @@ async function main() {
   }
 
   // ── 5. Legacy + Extended Promotion Scan ───────────────────────────
-  console.log();
-  console.log(div('═'));
-  console.log('  SECTION D — SUPPLEMENTAL PROMOTION SCAN');
-  console.log(div('═'));
+  log();
+  log(div('═'));
+  log('  SECTION D — SUPPLEMENTAL PROMOTION SCAN');
+  log(div('═'));
 
   const legacyPromo = evaluatePromotion(DAYS_OUT, prop.myOccupancy, market.marketOccupancy, prop.currentPrice, centroid);
-  console.log();
-  console.log(row('  Legacy Velocity Check',       legacyPromo));
+  log();
+  log(row('  Legacy Velocity Check',       legacyPromo));
 
   const marketState = determineMarketState(market.marketOccupancy, market.marketOccupancy);
   const extended = scanAllPromotions(
@@ -508,34 +635,44 @@ async function main() {
   );
 
   if (extended.length > 0) {
-    console.log();
-    console.log('  Structured Promotions Found:');
-    console.log('  ' + div('─', 70));
+    log();
+    log('  Structured Promotions Found:');
+    log('  ' + div('─', 70));
     for (const r of extended) {
-      console.log(`    ${r.type.padEnd(26)} ${r.value.padEnd(20)} ${r.rationale}`);
+      log(`    ${r.type.padEnd(26)} ${r.value.padEnd(20)} ${r.rationale}`);
     }
   } else {
-    console.log(row('  Structured Promotions',      'None triggered'));
+    log(row('  Structured Promotions',      'None triggered'));
   }
 
   // ── Summary ───────────────────────────────────────────────────────
-  console.log();
-  console.log(div('═'));
-  console.log('  ENGINE SUMMARY');
-  console.log(div('═'));
-  console.log();
-  console.log(row('  New APS',                     fx(newAPS)));
-  console.log(row('  Annual Target',               dollar(annualTarget)));
-  console.log(row('  Price Range',                 `${dollar(minPrice)} – ${dollar(maxPrice)}`));
-  console.log(row('  Error Forecast Diagnosis',    monthly.diagnosis.type));
-  console.log(row('  Corrected Target Rent',       dollar(monthly.correction.newTargetRent)));
-  console.log(row('  Market State',                weekly.marketState + ' → ' + weekly.operatingMode));
-  console.log(row('  Bell Curve Recommendations',  String(weekly.counts.total)));
-  console.log();
-  console.log(div('═'));
-  console.log('  Run complete.');
-  console.log(div('═'));
-  console.log();
+  log();
+  log(div('═'));
+  log('  ENGINE SUMMARY');
+  log(div('═'));
+  log();
+  log(row('  New APS',                     fx(newAPS)));
+  log(row('  Annual Target',               dollar(annualTarget)));
+  log(row('  Price Range',                 `${dollar(minPrice)} – ${dollar(maxPrice)}`));
+  log(row('  Error Forecast Diagnosis',    monthly.diagnosis.type));
+  log(row('  Corrected Target Rent',       dollar(monthly.correction.newTargetRent)));
+  log(row('  Market State',                weekly.marketState + ' → ' + weekly.operatingMode));
+  log(row('  Bell Curve Recommendations',  String(weekly.counts.total)));
+  log();
+  log(div('═'));
+  log('  Run complete.');
+  log(div('═'));
+  log();
+
+  // ── Write report to file ──────────────────────────────────────────
+  if (write) {
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const slug = propertySlug || 'report';
+    const filename = `${slug}-${dateStr}.txt`;
+    await mkdir('./reports', { recursive: true });
+    await writeFile(`./reports/${filename}`, lines.join('\n'), 'utf-8');
+    console.log(`  Report written to ./reports/${filename}`);
+  }
 }
 
 // Only run CLI when executed directly (not when imported as a module)
