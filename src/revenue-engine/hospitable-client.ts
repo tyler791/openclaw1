@@ -70,6 +70,8 @@ export interface PropertyDetails {
   propertyType: string;
   sleeps: number;
   amenities: string[];
+  city: string;
+  state: string;
 }
 
 export async function fetchPropertyDetails(
@@ -85,6 +87,7 @@ export async function fetchPropertyDetails(
     summary?: string;
     amenities?: string[];
     capacity?: { guests?: number };
+    address?: { city?: string; state?: string; country?: string };
   } }>(config, `/properties/${propertyId}`);
 
   const p = res?.data;
@@ -117,6 +120,8 @@ export async function fetchPropertyDetails(
     propertyType: (p?.property_type ?? p?.type ?? 'house').toLowerCase(),
     sleeps: sleeps || Number(p?.capacity?.guests ?? 0),
     amenities,
+    city: p?.address?.city ?? '',
+    state: p?.address?.state ?? '',
   };
 }
 

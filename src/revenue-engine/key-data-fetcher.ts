@@ -24,6 +24,66 @@ export interface ComparableFilters {
   ota?: string;
 }
 
+// ── Market Discovery (dynamic UUID lookup) ──────────────────────────
+
+interface KeyDataMarket {
+  id: string;
+  title: string;
+  level?: string;
+}
+
+async function fetchMarketList(
+  config: KeyDataConfig,
+  endpoint: string,
+): Promise<KeyDataMarket[]> {
+  const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
+  const res = await fetch(`${baseUrl}${endpoint}`, {
+    method: 'GET',
+    headers: { 'x-api-key': config.apiKey, 'Accept': 'application/json' },
+  });
+  if (!res.ok) return [];
+  return (await res.json()) as KeyDataMarket[];
+}
+
+function matchMarket(markets: KeyDataMarket[], city: string): KeyDataMarket | null {
+  const cityLower = city.toLowerCase();
+
+  // Priority 1: title starts with "City (City)" or "City - STATE"
+  for (const m of markets) {
+    const t = m.title.toLowerCase();
+    if (t === cityLower || t === `${cityLower} (city)` || t.startsWith(`${cityLower} -`)) {
+      return m;
+    }
+  }
+
+  // Priority 2: title contains city name (e.g. "Galveston Island")
+  for (const m of markets) {
+    if (m.title.toLowerCase().includes(cityLower)) {
+      return m;
+    }
+  }
+
+  return null;
+}
+
+export async function findMarketForLocation(
+  config: KeyDataConfig,
+  city: string,
+  _state: string,
+): Promise<{ id: string; name: string; subscribed: boolean } | null> {
+  // 1. Check user's subscribed markets first
+  const myMarkets = await fetchMarketList(config, '/v1/markets/my');
+  const myMatch = matchMarket(myMarkets, city);
+  if (myMatch) return { id: myMatch.id, name: myMatch.title, subscribed: true };
+
+  // 2. Fall back to global markets list
+  const allMarkets = await fetchMarketList(config, '/v1/markets');
+  const globalMatch = matchMarket(allMarkets, city);
+  if (globalMatch) return { id: globalMatch.id, name: globalMatch.title, subscribed: false };
+
+  return null;
+}
+
 // ── Raw POST request ────────────────────────────────────────────────
 
 async function postRequest<T>(
